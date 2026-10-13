@@ -1,0 +1,1300 @@
+using Color = System.Drawing.Color;
+using Size = System.Drawing.Size;
+using Point = System.Drawing.Point;
+using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Text;
+using CustomLibs;
+using System.Windows.Forms.VisualStyles;
+using CustomExtensions;
+using System;
+
+// Hummingbird v2.0.2:	Disable Application.DoEvents() in ConsoleTextmanager.PushTocontrol
+//						Can cause OverflowExceptionError in rapid printing
+//						Add Spinner + Slider to FlexDialog
+// FolderWatch v1.3.5:	Add RichTextBox capability to LogAndStatusManager
+// Folderwatch v1.4.8:	Optimize RichTextBox update/insertion performance
+// Folderwatch v1.5.0:	RichTextBox logic fix
+// Folderwatch v1.5.2:	Timer recursion fix
+// Folderwatch v1.6.0:	Add virtual mode for ListView
+//						Add HyperLogView option
+//						Remove RichTextBox support from LogAndStatusManager
+// Folderwatch v1.6.2:	Add HyperTextBox option
+// Folderwatch v1.7.7:	Change List<LogItem> to Queue<LogItem> for reentrancy problem
+// Folderwatch v1.7.9:	Change Queue<LogItem> to ConcurrentQueue<LogItem> for reentrancy problem
+// FolderBot v2.3.0		Update boolean naming convention
+//						ConsoleTextManager PopLog batch process performance improvement
+
+
+namespace CustomControls {
+	public class ConsoleTextManager {
+		public class TextItem {
+			public int Index;
+			public string Text;
+			public Color TextColor;
+
+			public TextItem(int index, string text, Color textColor) {
+				Index = index;
+				Text = text;
+				TextColor = textColor;
+			}
+		}
+		public RichTextBox? TextBoxToControl;
+		public RoundedRichTextBox? TextBoxToControlRounded;
+		public bool CanFilter;
+		public Dictionary<string, string> FilterDictionary;
+		private Color TextColor;
+		ConcurrentQueue<TextItem> TextFifo;
+		private System.Windows.Forms.Timer FifoTimer;
+		private bool IsProcessingFifo;
+
+		public ConsoleTextManager(RichTextBox console) {
+			TextBoxToControl = console;
+			TextBoxToControlRounded = null;
+			CommonInit();
+		}
+
+		public ConsoleTextManager(RoundedRichTextBox console) {
+			TextBoxToControlRounded = console;
+			TextBoxToControl = null;
+			CommonInit();
+		}
+
+		private void CommonInit() {
+			FilterDictionary = new Dictionary<string, string>();
+			TextColor = Color.Black;
+			TextFifo = new ConcurrentQueue<TextItem>();
+			IsProcessingFifo = false;
+			FifoTimer = new System.Windows.Forms.Timer();
+			FifoTimer.Interval = 10;
+			FifoTimer.Enabled = true;
+			FifoTimer.Tick += FifoTimer_Tick;
+			FifoTimer.Start();
+		}
+
+		~ConsoleTextManager() {
+			if (FifoTimer != null) {
+				FifoTimer.Stop();
+				FifoTimer.Dispose();
+			}
+		}
+
+		public int AddText(string text, Color textColor) {
+			TextItem item = new TextItem(0, text, textColor);
+			PushLog(item);
+			return item.Index;
+		}
+
+		public void ClearText() {
+			TextBoxToControl?.Invoke(new Action(delegate {
+				TextBoxToControl.Text = "";
+			}));
+			TextBoxToControlRounded?.Invoke(new Action(delegate {
+				TextBoxToControlRounded.Text = "";
+			}));
+		}
+
+		private void FifoTimer_Tick(object? sender, EventArgs? e) {
+			if (!IsProcessingFifo) {
+				IsProcessingFifo = true;
+				PopLog();
+				IsProcessingFifo = false;
+			}
+		}
+
+		private void PushLog(TextItem item) {
+			TextFifo.Enqueue(item);
+		}
+
+		private void PopLog() {
+			StringBuilder sb = new StringBuilder();
+			Color currentColor = Color.White;
+			int processed = 0;
+			int currentIndex = 0;
+			TextItem item;
+			TextItem peek;
+			while (TextFifo.Count > 0) {
+				if (!TextFifo.TryDequeue(out peek)) break;
+				if (processed == 0) currentColor = peek.TextColor;
+				if (peek.TextColor != currentColor) {
+					break;
+				} else {
+					currentIndex = peek.Index;
+					sb.Append(peek.Text);
+				}
+			}
+			if (sb.Length > 0) {
+				item = new TextItem(currentIndex, sb.ToString(), currentColor);
+				PushToControl(item);
+			}
+		}
+
+		public void PushToControl(TextItem item) {
+			if (CanFilter) {
+				foreach (KeyValuePair<string, string> pair in FilterDictionary) {
+					if (item.Text.Contains(pair.Key)) {
+						item.Text = item.Text.Replace(pair.Key, pair.Value);
+					}
+				}
+			}
+			try {
+				TextBoxToControl?.Invoke(new Action(delegate {
+					TextBoxToControl.SelectionColor = item.TextColor;
+					TextBoxToControl.AppendText(item.Text);
+					TextBoxToControl.SelectionStart = TextBoxToControl.Text.Length;
+					// scroll it automatically
+					TextBoxToControl.ScrollToCaret();
+				}));
+				TextBoxToControlRounded?.Invoke(new Action(delegate {
+					TextBoxToControlRounded.SelectionColor = item.TextColor;
+					TextBoxToControlRounded.AppendText(item.Text);
+					TextBoxToControlRounded.SelectionStart = TextBoxToControlRounded.Text.Length;
+					// scroll it automatically
+					TextBoxToControlRounded.ScrollToCaret();
+				}));
+			} catch (Exception ex) {
+				string buf = ex.Message;
+			}
+			Application.DoEvents();
+		}
+	}
+
+	public class ProgressBarManager {
+		public ProgressBar ProgressControl;
+		public RoundedProgressBar ProgressControlRounded;
+		private System.Windows.Forms.Timer ProgressTimer;
+		public int Progress;
+		private int Modulo;
+		private int TickPos;
+
+		public ProgressBarManager(ProgressBar barToControl) {
+			ProgressControl = barToControl;
+			ProgressControlRounded = null;
+			CommonInit();
+		}
+
+		public ProgressBarManager(RoundedProgressBar barToControl) {
+			ProgressControl = null;
+			ProgressControlRounded = barToControl;
+			CommonInit();
+		}
+
+		private void CommonInit() {
+			ProgressTimer = new System.Windows.Forms.Timer();
+			ProgressTimer.Interval = 100;
+			ProgressTimer.Enabled = true;
+			ProgressTimer.Tick += ProgressTimer_Tick;
+			ProgressTimer.Start();
+			TickPos = 0;
+			Modulo = 1;
+		}
+
+		~ProgressBarManager() {
+			if (ProgressTimer != null) {
+				ProgressTimer.Stop();
+				ProgressTimer.Dispose();
+			}
+		}
+
+		public int Max {
+			set {
+				//if (max == ProgressBarToControl.Maximum) return;
+				if (ProgressControl != null) {
+					ProgressControl.Invoke(new Action(delegate {
+						if (ProgressControl.Value > value) ProgressControl.Value = value;
+						ProgressControl.Maximum = value;
+					}));
+					Modulo = value / ProgressControl.Width;
+				}
+				if (ProgressControlRounded != null) {
+					ProgressControlRounded.Invoke(new Action(delegate {
+						if (ProgressControlRounded.Value > value) ProgressControlRounded.Value = value;
+						ProgressControlRounded.Maximum = value;
+					}));
+					Modulo = value / ProgressControlRounded.Width;
+				}
+				if (Progress > value) Progress = value;
+				if (Modulo == 0) Modulo = 1;
+			}
+			get {
+				if (ProgressControl != null) {
+					return ProgressControl.Maximum;
+				} else if (ProgressControlRounded != null) {
+					return ProgressControlRounded.Maximum;
+				} else {
+					return 0;
+				}
+			}
+		}
+
+		public void Advance() {
+			Progress++;
+		}
+
+		public void Advance(int ticks) {
+			Progress += ticks;
+		}
+
+		public void Set(int val) {
+			Progress = val;
+		}
+
+		public void GoToEnd() {
+			if (ProgressControl == null) return;
+			Progress = ProgressControl.Maximum;
+		}
+
+		private void ProgressTimer_Tick(object? sender, EventArgs? e) {
+			int tick = (int)Progress / Modulo;
+			if (ProgressControl != null) {
+				if (this.Progress <= ProgressControl.Maximum) {
+					if (tick != TickPos) {
+						ProgressControl.Invoke(new Action(delegate {
+							ProgressControl.Value = Progress;
+						}));
+					}
+				}
+			}
+			if (ProgressControlRounded != null) {
+				if (this.Progress <= ProgressControlRounded.Maximum) {
+					if (tick != TickPos) {
+						ProgressControlRounded.Invoke(new Action(delegate {
+							ProgressControlRounded.Value = Progress;
+						}));
+					}
+				}
+			}
+			TickPos = tick;
+			//Debug.WriteLine(String.Format("ProgressBar value={0} tick={1} max={2}", Progress, TickPos, Max));
+			Application.DoEvents();
+		}
+	}
+
+	public class FlexDialogManager {
+		public enum ControlType { TEXT, CHECK, RADIO, SLIDER, SPINNER };
+		public class ControlItem {
+			public string ControlLabel;
+			public ControlType UserControlType;
+			public System.Windows.Forms.Control UserControl;
+			public Label Label;
+			public System.Windows.Forms.Control[] SubControls;
+			public Label[] SubLabels;
+			public Size OverrideSize;
+			public int DefaultVal;
+			public string DefaultText;
+			public bool ShouldEnableByDefault;
+			public int MinValue;
+			public int MaxValue;
+
+			// initializer for textbox
+			public ControlItem(string label, ControlType controlType, Size overrideSize, string defaultText) {
+				ControlLabel = label;
+				UserControlType = controlType;
+				OverrideSize = overrideSize;
+				DefaultText = defaultText;
+			}
+
+			// initializer for checkbox
+			public ControlItem(string label, ControlType controlType, bool shouldEnableByDefault) {
+				ControlLabel = label;
+				UserControlType = controlType;
+				ShouldEnableByDefault = shouldEnableByDefault;
+			}
+
+			// initializer for radiobutton
+			public ControlItem(string label, ControlType controlType, int defaultVal) {
+				ControlLabel = label;
+				UserControlType = controlType;
+				DefaultVal = defaultVal;
+			}
+
+			// initializer for spinner/slider
+			public ControlItem(string label, ControlType controlType, int defaultVal, int minVal, int maxVal) {
+				ControlLabel = label;
+				UserControlType = controlType;
+				DefaultVal = defaultVal;
+				MinValue = minVal;
+				MaxValue = maxVal;
+			}
+
+		}
+
+		public List<ControlItem> ControlItems;
+		private bool IsDialogInitialized;
+		public Form FlexForm;
+		public Action MoveEventCallback;
+		public const int SLIDER_TICK = 10;
+
+		public FlexDialogManager() {
+			IsDialogInitialized = false;
+			FlexForm = new Form();
+			FlexForm.MinimizeBox = false;
+			FlexForm.MaximizeBox = false;
+			FlexForm.Resize += FlexForm_Resize;
+			FlexForm.FormClosing += FlexForm_Closing;
+			FlexForm.Move += FlexForm_Move;
+		}
+
+		private void FlexForm_Move(object sender, EventArgs e) {
+			if (MoveEventCallback != null) MoveEventCallback();
+		}
+
+		private void FlexForm_UpdateControl(object sender, EventArgs e) {
+			string label = ((Control)sender).Tag.ToString();
+			ControlItem item = FindControlByLabel(label);
+			if (item.UserControlType == ControlType.SLIDER) {
+				int sliderVal = (int)(((HScrollBar)item.UserControl).Value);
+				if (sliderVal % SLIDER_TICK > 0) {
+					sliderVal = ((sliderVal / SLIDER_TICK) + 1) * SLIDER_TICK;
+					((HScrollBar)item.UserControl).Value = sliderVal;
+				}
+				item.SubControls[0].Text = (sliderVal / SLIDER_TICK).ToString();
+			}
+			if (item.UserControlType == ControlType.SPINNER) {
+				item.SubControls[0].Text = ((int)(((NumericUpDown)item.UserControl).Value)).ToString();
+			}
+		}
+
+		private void ResizeLabel(Label lbl) {
+			Size textSize = TextRenderer.MeasureText(lbl.Text, lbl.Font);
+			lbl.Width = textSize.Width;
+		}
+
+		private void ResizeRadio(RadioButton radio) {
+			Size textSize = TextRenderer.MeasureText(radio.Text, radio.Font);
+			radio.Width = textSize.Width + 20;
+		}
+		private void ResizeControl(System.Windows.Forms.Control con, int adjustment) {
+			Size textSize = TextRenderer.MeasureText(con.Text, con.Font);
+			con.Width = textSize.Width + adjustment;
+		}
+
+		private void FlexForm_Resize(object sender, EventArgs e) {
+			if (ControlItems == null) return;
+			if (!IsDialogInitialized) return;
+			foreach (ControlItem item in ControlItems) {
+				if (item.UserControlType == ControlType.TEXT) {
+					if (item.OverrideSize.Width == 0) {
+						item.UserControl.Width = FlexForm.Width - item.Label.Width - 35;
+					}
+				}
+				if (item.UserControlType == ControlType.SLIDER) {
+					item.UserControl.Width = FlexForm.Width - item.Label.Width - item.SubControls[0].Width - 40;
+					item.SubControls[0].Left = item.UserControl.Right + 5;
+				}
+			}
+		}
+
+		private void FlexForm_Closing(object sender, FormClosingEventArgs e) {
+			e.Cancel = true;
+		}
+
+		public void Position(Point location) {
+			FlexForm.Invoke(new Action(delegate {
+				FlexForm.Location = location;
+			}));
+		}
+
+		public void BuildDialog(List<ControlItem> itemList) {
+			if (IsDialogInitialized) DestroyDialog();
+			ControlItems = itemList;
+			string[] sublabels;
+			char[] delims = { ',', '/', '\\' };
+			int subCount;
+			Point XY = new Point(5, 5);
+			Point subXY = new Point(5, 5);
+			Size extant = new Size();
+			int itemWidth;
+			FlexForm.Invoke(new Action(delegate {
+				foreach (ControlItem item in ControlItems) {
+					itemWidth = 0;
+					switch (item.UserControlType) {
+						case ControlType.TEXT:
+							// init
+							item.Label = new Label();
+							item.UserControl = new TextBox();
+							FlexForm.Controls.Add(item.Label);
+							FlexForm.Controls.Add(item.UserControl);
+							// value
+							item.Label.Text = item.ControlLabel;
+							item.UserControl.Text = item.DefaultText;
+							item.UserControl.Tag = item.ControlLabel;
+							// position
+							ResizeLabel(item.Label);
+							if (item.OverrideSize.Width > 0) item.UserControl.Width = item.OverrideSize.Width;
+							item.Label.Location = new Point(XY.X, XY.Y);
+							item.UserControl.Location = new(item.Label.Right + 5, XY.Y);
+							itemWidth = item.UserControl.Right + 5;
+							break;
+						case ControlType.RADIO:
+							// init
+							sublabels = item.ControlLabel.Split(delims);
+							item.ControlLabel = sublabels[0];
+							subCount = sublabels.Count() - 1;
+							item.UserControl = new GroupBox();
+							item.SubControls = new System.Windows.Forms.Control[subCount];
+							FlexForm.Controls.Add(item.UserControl);
+							for (int i = 0; i < subCount; i++) {
+								item.SubControls[i] = new RadioButton();
+								item.UserControl.Controls.Add(item.SubControls[i]);
+							}
+							if (item.DefaultVal < subCount) {
+								((RadioButton)item.SubControls[item.DefaultVal]).Checked = true;
+							}
+							// value
+							item.UserControl.Text = sublabels[0];
+							item.UserControl.Tag = item.ControlLabel;
+							for (int i = 0; i < subCount; i++) {
+								item.SubControls[i].Text = sublabels[i + 1];
+							}
+							// position
+							item.UserControl.Location = XY;
+							item.UserControl.Height = 45;
+							//item.SubLabels = new Label[subCount];
+							subXY.X = 5; subXY.Y = 5;
+							for (int i = 0; i < subCount; i++) {
+								ResizeControl(item.SubControls[i], 20);
+								item.SubControls[i].Top = 15;
+								item.SubControls[i].Left = subXY.X;
+								subXY.X += item.SubControls[i].Width + 5;
+							}
+							item.UserControl.Width = subXY.X;
+							itemWidth = item.UserControl.Right + 5;
+							break;
+						case ControlType.CHECK:
+							// init
+							item.UserControl = new CheckBox();
+							FlexForm.Controls.Add(item.UserControl);
+							// value
+							item.UserControl.Text = item.ControlLabel;
+							item.UserControl.Tag = item.ControlLabel;
+							((CheckBox)item.UserControl).Checked = item.ShouldEnableByDefault;
+							// position
+							item.UserControl.Location = XY;
+							itemWidth = item.UserControl.Right + 5;
+							break;
+						case ControlType.SLIDER:
+							// init
+							item.UserControl = new HScrollBar();
+							item.Label = new Label();
+							item.SubControls = new System.Windows.Forms.Control[1];
+							item.SubControls[0] = new TextBox();
+							FlexForm.Controls.Add(item.Label);
+							FlexForm.Controls.Add(item.UserControl);
+							FlexForm.Controls.Add(item.SubControls[0]);
+							((HScrollBar)item.UserControl).ValueChanged += FlexForm_UpdateControl;
+							// value
+							item.UserControl.Tag = item.ControlLabel;
+							item.Label.Text = item.ControlLabel;
+							((TextBox)item.SubControls[0]).ReadOnly = true;
+							item.SubControls[0].Text = item.DefaultVal.ToString();
+							((HScrollBar)item.UserControl).Maximum = item.MaxValue * SLIDER_TICK;
+							((HScrollBar)item.UserControl).Minimum = item.MinValue * SLIDER_TICK;
+							((HScrollBar)item.UserControl).Value = item.DefaultVal * SLIDER_TICK;
+							((HScrollBar)item.UserControl).LargeChange = SLIDER_TICK;
+							((HScrollBar)item.UserControl).SmallChange = SLIDER_TICK;
+							// position
+							item.UserControl.Location = XY;
+							item.Label.Location = new Point(XY.X, XY.Y);
+							ResizeLabel(item.Label);
+							item.UserControl.Location = new Point(item.Label.Right + 5, XY.Y);
+							item.SubControls[0].Location = new Point(item.UserControl.Right + 5, XY.Y);
+							item.SubControls[0].Width = item.MaxValue.ToString().Length * 5 + 10;
+							itemWidth = item.SubControls[0].Right + 10;
+							break;
+						case ControlType.SPINNER:
+							// init
+							item.UserControl = new NumericUpDown();
+							item.Label = new Label();
+							item.SubControls = new System.Windows.Forms.Control[1];
+							item.SubControls[0] = new TextBox();
+							FlexForm.Controls.Add(item.Label);
+							FlexForm.Controls.Add(item.UserControl);
+							FlexForm.Controls.Add(item.SubControls[0]);
+							((NumericUpDown)item.UserControl).ValueChanged += FlexForm_UpdateControl;
+							// value
+							item.UserControl.Tag = item.ControlLabel;
+							item.Label.Text = item.ControlLabel;
+							((TextBox)item.SubControls[0]).ReadOnly = true;
+							item.SubControls[0].Text = item.DefaultVal.ToString();
+							((NumericUpDown)item.UserControl).Maximum = item.MaxValue;
+							((NumericUpDown)item.UserControl).Minimum = item.MinValue;
+							((NumericUpDown)item.UserControl).Value = item.DefaultVal;
+							// position
+							item.UserControl.Location = XY;
+							item.Label.Location = new Point(XY.X, XY.Y);
+							ResizeLabel(item.Label);
+							item.UserControl.Location = new Point(item.Label.Right + 5, XY.Y);
+							item.UserControl.Width = item.MaxValue.ToString().Length * 5 + 30;
+							item.SubControls[0].Location = new Point(item.UserControl.Right + 5, XY.Y);
+							item.SubControls[0].Width = item.MaxValue.ToString().Length * 5 + 10;
+							itemWidth = item.SubControls[0].Right + 10;
+							break;
+					}
+					if (itemWidth > extant.Width) extant.Width = itemWidth;
+					XY.Y = item.UserControl.Bottom + 5;
+				}
+				extant.Width += 20;
+				extant.Height = XY.Y + 5;
+				IsDialogInitialized = true;
+				FlexForm.Width = extant.Width;
+				FlexForm.Height = extant.Height + 40;
+			}));
+		}
+
+		private void FlexDialogManager_ValueChanged(object? sender, EventArgs e) {
+			throw new NotImplementedException();
+		}
+
+		private void DestroyDialog() {
+			FlexForm.Invoke(new Action(delegate {
+				for (int i = 0; i < ControlItems.Count(); i++) {
+					if (ControlItems[i].SubControls != null) {
+						for (int j = 0; j < ControlItems[i].SubControls.Count(); j++) {
+							FlexForm.Controls.Remove(ControlItems[i].SubControls[j]);
+							ControlItems[i].SubControls[j].Dispose();
+						}
+					}
+					FlexForm.Controls.Remove(ControlItems[i].UserControl);
+					ControlItems[i].UserControl.Dispose();
+					if (ControlItems[i].Label != null) {
+						FlexForm.Controls.Remove(ControlItems[i].Label);
+						ControlItems[i].Label.Dispose();
+					}
+				}
+			}));
+			IsDialogInitialized = false;
+		}
+
+		public void ShowDialog() {
+			FlexForm.Invoke(new Action(delegate {
+				FlexForm.Show();
+			}));
+		}
+
+		public void HideDialog() {
+			FlexForm.Invoke(new Action(delegate {
+				FlexForm.Hide();
+			}));
+		}
+
+		public ControlItem FindControlByLabel(string label) {
+			for (int i = 0; i < ControlItems.Count(); i++) {
+				if (ControlItems[i].ControlLabel == label) {
+					return ControlItems[i];
+				}
+			}
+			return null;
+		}
+
+		public int GetRadio(string label) {
+			int idx = -1;
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					for (int j = 0; j < item.SubControls.Count(); j++) {
+						if (((RadioButton)item.SubControls[j]).Checked) {
+							idx = j;
+						}
+					}
+				}));
+			}
+			return idx;
+		}
+
+		public void SetRadio(string label, int val) {
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				if (val < item.SubControls.Count()) {
+					FlexForm.Invoke(new Action(delegate {
+						((RadioButton)item.SubControls[val]).Checked = true;
+					}));
+				}
+			}
+		}
+
+		public string GetText(string label) {
+			string text = "";
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					text = item.UserControl.Text;
+				}));
+			}
+			return text;
+		}
+
+		public void SetText(string label, string text) {
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					item.UserControl.Text = text;
+				}));
+			}
+		}
+
+		public bool GetCheck(string label) {
+			bool check = false;
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					check = ((CheckBox)item.UserControl).Checked;
+				}));
+			}
+			return check;
+		}
+
+		public void SetCheck(string label, bool check) {
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					((CheckBox)item.UserControl).Checked = check;
+				}));
+			}
+		}
+
+		public int GetSlide(string label) {
+			int val = -1;
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					val = ((HScrollBar)item.UserControl).Value / SLIDER_TICK;
+				}));
+			}
+			return val;
+		}
+
+		public void SetSlide(string label, int val) {
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				HScrollBar scroll = item.UserControl as HScrollBar;
+				if (val * SLIDER_TICK > scroll.Maximum) {
+					// do some error handling here
+				} else {
+					FlexForm.Invoke(new Action(delegate {
+						scroll.Value = val * SLIDER_TICK;
+					}));
+				}
+			}
+		}
+
+		public int GetSpin(string label) {
+			int val = -1;
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				FlexForm.Invoke(new Action(delegate {
+					val = (int)((NumericUpDown)item.UserControl).Value;
+				}));
+			}
+			return val;
+		}
+
+		public void SetSpin(string label, int val) {
+			ControlItem item = FindControlByLabel(label);
+			if (item != null) {
+				NumericUpDown updown = item.UserControl as NumericUpDown;
+				if (val > updown.Maximum) {
+				} else {
+					FlexForm.Invoke(new Action(delegate {
+						updown.Value = val;
+					}));
+				}
+			}
+		}
+
+	}
+
+	public class LogAndStatusManager {
+
+		public class LogItem {
+			public int Index;
+			public int Parent;
+			public string Text;
+			public string ToolTip;
+			public ErrorLevel Level;
+			public Color ExtendedColor;
+			public bool IsSubItem;
+			public bool ShouldUpdate;
+
+			public LogItem() {
+				Text = "";
+				ToolTip = "";
+				Parent = -1;
+			}
+
+			public LogItem(string text, string tooltip, ErrorLevel level, Color extendedColor, bool isSubItem, bool shouldUpdate) {
+				Index = 0;
+				Text = text;
+				ToolTip = tooltip;
+				Level = level;
+				ExtendedColor = extendedColor;
+				IsSubItem = isSubItem;
+				ShouldUpdate = shouldUpdate;
+			}
+		}
+
+		public ListView ListViewToControl;
+		public TextBox LogStripToControl;
+		public HyperLogView HyperViewToControl;
+		public HyperTextBox HyperStripToControl;
+		public bool CanFilter;
+		public Dictionary<string, string> FilterDictionary;
+		private string LastMessage;
+		private Color TextColor;
+		private string PopupMessage;
+		ConcurrentQueue<LogItem> LogQueue;
+		private System.Windows.Forms.Timer FifoTimer;
+		private int Index;
+		private object IndexLock;
+		private bool IsProcessingFifo;
+		private bool IsVirtualListViewEnabled;
+		List<ListViewItem> VirtualListItems;
+
+		public LogAndStatusManager(HyperTextBox hyperStrip, TextBox logStrip, HyperLogView hyperView, ListView logView, bool virtualListView = false) {
+			HyperStripToControl = hyperStrip;
+			LogStripToControl = logStrip;
+			HyperViewToControl = hyperView;
+			ListViewToControl = logView;
+			FilterDictionary = new Dictionary<string, string>();
+			PopupMessage = "";
+			TextColor = Color.Black;
+			LogQueue = new ConcurrentQueue<LogItem>();
+			IsProcessingFifo = false;
+			FifoTimer = new System.Windows.Forms.Timer();
+			FifoTimer.Interval = 10;
+			FifoTimer.Enabled = true;
+			FifoTimer.Tick += FifoTimer_Tick;
+			FifoTimer.Start();
+			Index = 0;
+			IndexLock = new object();
+			LastMessage = "";
+			if (ListViewToControl != null) {
+				IsVirtualListViewEnabled = virtualListView;
+				if (IsVirtualListViewEnabled) {
+					ListViewToControl.VirtualMode = true;
+					ListViewToControl.VirtualListSize = 0;
+					ListViewToControl.RetrieveVirtualItem += RetrieveVirtualItem;
+					VirtualListItems = new List<ListViewItem>();
+				}
+				ListViewToControl.Resize += ListView_Resize;
+			}
+		}
+
+		~LogAndStatusManager() {
+			if (FifoTimer != null) {
+				FifoTimer.Stop();
+				FifoTimer.Dispose();
+				//FifoTimer = null;
+			}
+		}
+
+		//////////////////////  Top-Level User Interface ////////////////////////
+		public int AddLog(string text) {
+			return AddLog(text, "", ErrorLevel.LOG_INFO);
+		}
+
+		public int AddLog(string text, ErrorLevel level) {
+			return AddLog(text, "", level);
+		}
+
+		public int AddLog(string text, string tooltip, ErrorLevel level) {
+			return AddLog(text, tooltip, level, Color.Blue);
+		}
+
+		public int AddLog(string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			LogItem item = new LogItem();
+			item.Text = text;
+			item.ToolTip = tooltip;
+			item.Level = level;
+			item.ExtendedColor = extendedColor;
+			lock (IndexLock) {
+				item.Index = Index;
+				Index++;
+			}
+			item.Parent = -1;   // no parent
+			PushLog(item);
+			return item.Index;
+		}
+
+		public void UpdateLog(int index, string text) {
+			UpdateLog(index, text, "", ErrorLevel.LOG_INFO, Color.Blue);
+		}
+
+		public void UpdateLog(int index, string text, ErrorLevel level) {
+			UpdateLog(index, text, "", level, Color.Blue);
+		}
+
+		public void UpdateLog(int index, string text, string tooltip, ErrorLevel level) {
+			UpdateLog(index, text, tooltip, level, Color.Blue);
+		}
+
+		public void UpdateLog(int index, string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			LogItem item = new LogItem();
+			item.Text = text;
+			item.ToolTip = tooltip;
+			item.Level = level;
+			item.ExtendedColor = extendedColor;
+			item.Index = index;
+			item.ShouldUpdate = true;
+			PushLog(item);
+		}
+
+		public int AddSubLog(int parent, string text) {
+			return AddSubLog(parent, text, "", ErrorLevel.LOG_INFO, Color.Blue);
+		}
+
+		public int AddSubLog(int parent, string text, ErrorLevel level) {
+			return AddSubLog(parent, text, "", level, Color.Blue);
+		}
+
+		public int AddSubLog(int parent, string text, string tooltip, ErrorLevel level) {
+			return AddSubLog(parent, text, tooltip, level, Color.Blue);
+		}
+
+		public int AddSubLog(int parent, string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			LogItem item = new LogItem();
+			item.Text = text;
+			item.ToolTip = tooltip;
+			item.Level = level;
+			item.ExtendedColor = extendedColor;
+			lock (IndexLock) {
+				item.Index = Index;
+				Index++;
+			}
+			item.Parent = parent;
+			item.IsSubItem = true;
+			PushLog(item);
+			return item.Index;
+		}
+
+		public void ClearListView() {
+			if (ListViewToControl != null) {
+				ListViewToControl.Clear();
+				if (IsVirtualListViewEnabled) {
+					ListViewToControl.VirtualListSize = 0;
+					VirtualListItems.Clear();
+				}
+			}
+			HyperViewToControl?.ClearLog();
+
+		}
+
+
+		//////////////////////  FIFO to ListView  ////////////////////////
+		private void FifoTimer_Tick(object? sender, EventArgs? e) {
+			if (!IsProcessingFifo) {
+				IsProcessingFifo = true;
+				if (LogQueue.Count > 0) PopLog();
+				IsProcessingFifo = false;
+			}
+		}
+
+		private void PushLog(LogItem item) {
+			LogQueue.Enqueue(item);
+			//Debug.WriteLine("Pushed " + item.Text);
+		}
+
+		private void PopLog() {
+			LogItem item;
+			ListViewToControl?.BeginUpdate();
+			while (LogQueue.TryDequeue(out item)) {
+				//Debug.WriteLine("Popped " + item.Text);
+				PushToControls(item);
+			}
+			ListViewToControl?.EndUpdate();
+			Application.DoEvents();
+		}
+
+		private void PushToControls(LogItem item) {
+			//int widthLimit = ListViewToControl.Width;
+			string prefix;
+
+			if (item == null) return;
+			switch (item.Level) {
+				case ErrorLevel.LOG_INFO: TextColor = Color.Green; prefix = "[I]"; break;
+				case ErrorLevel.LOG_ALERT: TextColor = Color.DarkCyan; prefix = "[A]"; break;
+				case ErrorLevel.LOG_WARNING: TextColor = Color.DarkOrange; prefix = "[W]"; break;
+				case ErrorLevel.LOG_ERROR: TextColor = Color.Red; prefix = "[E]"; break;
+				default: TextColor = Color.Black; prefix = ""; break;
+			}
+			if (CanFilter) {
+				foreach (KeyValuePair<string, string> pair in FilterDictionary) {
+					if (item.Text.Contains(pair.Key)) {
+						item.Text = item.Text.Replace(pair.Key, pair.Value);
+					}
+					if (item.ToolTip.Contains(pair.Key)) {
+						item.ToolTip = item.ToolTip.Replace(pair.Key, pair.Value);
+					}
+				}
+			}
+			try {
+				if (LogStripToControl != null) {
+					LogStripToControl.Invoke(new Action(delegate {
+						LogStripToControl.ForeColor = TextColor;
+						//LogStripToControl.Text = String.Format("{0}-{1}--", prefix, item.Text);
+					}));
+				}
+				if (ListViewToControl != null) {
+					ListViewToControl.Invoke(new Action(delegate {
+						if (item.ShouldUpdate) {
+							UpdateListEntry(item.Index, item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						} else if (item.IsSubItem) {
+							AddListSubEntry(item.Parent, item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						} else {
+							AddListEntry(item.Index, item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						}
+					}));
+				}
+				if (HyperStripToControl != null) {
+					HyperStripToControl.Invoke(new Action(delegate {
+						HyperTextBox.HyperTextItem hyperText = new HyperTextBox.HyperTextItem(item.Text, item.Level, item.ExtendedColor);
+						HyperStripToControl.Item = hyperText;
+					}));
+				}
+				if (HyperViewToControl != null) {
+					HyperViewToControl.Invoke(new Action(delegate {
+						if (item.ShouldUpdate) {
+							HyperViewToControl.UpdateLog(item.Index, item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						} else if (item.IsSubItem) {
+							HyperViewToControl.AddSubLog(item.Parent, item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						} else {
+							HyperViewToControl.AddLog(item.Text, item.ToolTip, item.Level, Color.DarkGray);
+						}
+					}));
+				}
+			} catch (Exception ex) {
+				string buf = ex.Message;
+			}
+			LastMessage = String.Format("{0} {1}", prefix, item.Text);
+			Popup = "";
+			Application.DoEvents();
+		}
+
+		private string Popup {
+			set {
+				if (LogStripToControl != null) {
+					LogStripToControl.Invoke(new Action(delegate {
+						if (value != "") {
+							LogStripToControl.ForeColor = Color.Black;
+							LogStripToControl.Text = value;
+						} else {
+							LogStripToControl.ForeColor = TextColor;
+							LogStripToControl.Text = LastMessage;
+						}
+					}));
+				}
+				PopupMessage = value;
+			}
+			get {
+				return PopupMessage;
+			}
+		}
+
+		//////////////////////  Direct ListView Control ////////////////////////
+
+		private void ListView_Resize(object sender, EventArgs e) {
+			ListViewToControl.Columns[0].Width = ListViewToControl.Width - 24;
+		}
+
+		private void AddListEntry(int index, string text, string tooltip, ErrorLevel level) {
+			AddListEntry(index, text, tooltip, level, Color.Blue);
+		}
+
+		private void AddListEntry(int index, string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			ListViewItem lvItem = FormatListItem(text, tooltip, level, extendedColor, false);
+			lvItem.Tag = index;
+			lvItem.EnsureVisible();
+			if (IsVirtualListViewEnabled) {
+				VirtualListItems.Add(lvItem);
+				ListViewToControl.VirtualListSize++;
+				ListViewToControl.EnsureVisible(ListViewToControl.Items.Count - 1);
+			} else {
+				ListViewToControl.Items.Add(lvItem);
+				ListViewToControl.EnsureVisible(ListViewToControl.Items.Count - 1);
+			}
+		}
+
+		private void UpdateListEntry(int index, string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			ListViewItem lvItem = FormatListItem(text, tooltip, level, extendedColor, false);
+			int i, c, j;
+
+			j = -1;
+			if (IsVirtualListViewEnabled) {
+				c = VirtualListItems.Count;
+				for (i = 0; i < c; i++) {
+					if (index == (int)VirtualListItems[i].Tag) {
+						j = i;
+						break;
+					}
+				}
+				if (j >= 0) {
+					lvItem.Tag = index;
+					VirtualListItems[j] = lvItem;
+					ListViewToControl.EnsureVisible(j);
+				}
+			} else {
+				c = ListViewToControl.Items.Count;
+				for (i = 0; i < c; i++) {
+					if (index == (int)ListViewToControl.Items[i].Tag) {
+						j = i;
+						break;
+					}
+				}
+				if (j >= 0) {
+					lvItem.Tag = index;
+					ListViewToControl.Items[j] = lvItem;
+					ListViewToControl.EnsureVisible(j);
+				}
+			}
+		}
+
+		private void AddListSubEntry(int index, string text, string tooltip, ErrorLevel level, Color extendedColor) {
+			ListViewItem lvItem = FormatListItem(text, tooltip, level, extendedColor, true);
+			int i, c, j;
+
+			j = -1;
+			if (IsVirtualListViewEnabled) {
+				c = VirtualListItems.Count;
+				for (i = c - 1; i >= 0; i--) {
+					if (index == (int)VirtualListItems[i].Tag) {
+						j = i;
+						break;
+					}
+				}
+				if (j >= 0) {
+					lvItem.Tag = index;
+					VirtualListItems.Insert(j + 1, lvItem);
+					ListViewToControl.VirtualListSize++;
+					ListViewToControl.EnsureVisible(j + 1);
+				}
+			} else {
+				c = ListViewToControl.Items.Count;
+				for (i = c - 1; i >= 0; i--) {
+					if (index == (int)ListViewToControl.Items[i].Tag) {
+						j = i;
+						break;
+					}
+				}
+				if (j >= 0) {
+					lvItem.Tag = index;
+					ListViewToControl.Items.Insert(j + 1, lvItem);
+					ListViewToControl.EnsureVisible(j + 1);
+				}
+			}
+		}
+
+		private ListViewItem FormatListItem(string text, string tooltip, ErrorLevel level, Color extendedColor, bool sub) {
+			Color textColor;
+			ListViewItem lvItem = new ListViewItem();
+			int image = 0;
+			switch (level) {
+				case ErrorLevel.LOG_INFO:
+					textColor = Color.Green;
+					if (sub) image = 6;
+					else image = 1;
+					break;
+				case ErrorLevel.LOG_ALERT:
+					textColor = Color.DarkCyan;
+					if (sub) image = 7;
+					else image = 2;
+					break;
+				case ErrorLevel.LOG_WARNING:
+					textColor = Color.DarkOrange;
+					if (sub) image = 8;
+					else image = 3;
+					break;
+				case ErrorLevel.LOG_ERROR:
+					textColor = Color.Red;
+					if (sub) image = 9;
+					else image = 4;
+					break;
+				case ErrorLevel.LOG_EXTENDED:
+					textColor = extendedColor;
+					if (sub) image = 10;
+					else image = 5;
+					break;
+				default: textColor = Color.Black; break;
+			}
+			lvItem.Text = text;
+			if (tooltip != "") lvItem.ToolTipText = tooltip;    // use same tootip for wrapped lines
+			lvItem.ForeColor = textColor;
+			lvItem.ImageIndex = image;
+			return lvItem;
+		}
+
+		//////////////////////  Virtual ListView Control ////////////////////////
+
+		private void RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e) {
+			e.Item = VirtualListItems[e.ItemIndex];
+		}
+
+	}
+
+	public class AsciiBox {
+		RichTextBox ClientTextBox;
+		RoundedRichTextBox ClientTextBoxRounded;
+		Size Extent;
+		char[,] TextBuffer;
+		Color[,] ColorBuffer;
+		public Font DisplayFont = new Font("Lucida Console", 12);
+
+		public class AsciiChar {
+			public char Char;
+			public Color Color;
+			public AsciiChar() {
+				Char = ' ';
+				Color = Color.Black;
+			}
+		}
+
+		public AsciiBox(RichTextBox targetBox) {
+			ClientTextBox = targetBox;
+			ClientTextBoxRounded = null;
+			ClientTextBox.Font = DisplayFont;
+		}
+
+		public AsciiBox(RoundedRichTextBox targetBox) {
+			ClientTextBox = null;
+			ClientTextBoxRounded = targetBox;
+			ClientTextBoxRounded.Font = DisplayFont;
+		}
+
+		public void InitArray() {
+			int x, y;
+			for (y = 0; y < Extent.Height; y++) {
+				for (x = 0; x < Extent.Width; x++) {
+					//TextBuffer[y, x] = new AsciiChar();
+					TextBuffer[y, x] = ' ';
+				}
+			}
+		}
+
+		public void ClearText() {
+			int x, y;
+			for (y = 0; y < Extent.Height; y++) {
+				for (x = 0; x < Extent.Width; x++) {
+					//TextBuffer[y, x].Char = ' ';
+					TextBuffer[y, x] = ' ';
+				}
+			}
+		}
+
+		public void ClearColor(Color clr) {
+			int x, y;
+			for (y = 0; y < Extent.Height; y++) {
+				for (x = 0; x < Extent.Width; x++) {
+					//TextBuffer[y, x].Color = clr;
+				}
+			}
+		}
+
+		public Size BoxSize {
+			get {
+				return Extent;
+			}
+			set {
+				Extent = value;
+				TextBuffer = new char[Extent.Height, Extent.Width];
+				InitArray();
+			}
+		}
+
+		public void WriteXY(int x, int y, char c) {
+			//TextBuffer[y, x].Char = c;
+			TextBuffer[y, x] = c;
+		}
+
+
+		public void WriteXY(int x, int y, string s) {
+			int k;
+			int len = s.Length;
+			if (y >= Extent.Height) return;
+			for (k = 0; k < len; k++) {
+				if ((k + x) >= Extent.Width) continue;
+				TextBuffer[y, k + x] = s[k];
+			}
+		}
+
+		public void Update() {
+			char[] lineArray;
+			int x, y;
+			StringBuilder sb = new StringBuilder();
+			ClientTextBox?.Invoke(new Action(delegate {
+				for (y = 0; y < Extent.Height; y++) {
+					lineArray = new char[Extent.Width];
+					for (x = 0; x < Extent.Width; x++) {
+						lineArray[x] = TextBuffer[y, x];
+					}
+					sb.Append(new string(lineArray));
+					sb.Append('\n');
+				}
+				ClientTextBox.Text = sb.ToString();
+			}));
+			ClientTextBoxRounded?.Invoke(new Action(delegate {
+				for (y = 0; y < Extent.Height; y++) {
+					lineArray = new char[Extent.Width];
+					for (x = 0; x < Extent.Width; x++) {
+						lineArray[x] = TextBuffer[y, x];
+					}
+					sb.Append(new string(lineArray));
+					sb.Append('\n');
+				}
+				ClientTextBoxRounded.Text = sb.ToString();
+			}));
+		}
+	}
+
+	public class DataTable {
+		DataGridView GridView;
+		RoundedDataGridView GridViewRounded;
+		Size Extent;
+
+		public DataTable(DataGridView targetGrid) {
+			GridView = targetGrid;
+			GridView.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+			GridViewRounded = null;
+		}
+
+		public DataTable(RoundedDataGridView targetGrid) {
+			GridViewRounded = targetGrid;
+			GridViewRounded.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+			GridView = null;
+		}
+
+		public void GridSize(int rows, int cols) {
+			int j;
+			string[] entries;
+			GridView?.Invoke(new Action(delegate {
+				GridView.Rows.Clear();
+				GridView.ColumnCount = cols;
+				for (j = 0; j < rows; j++) {
+					entries = new string[cols];
+					GridView.Rows.Add(entries);
+				}
+			}));
+			GridViewRounded?.Invoke(new Action(delegate {
+				GridViewRounded.Rows.Clear();
+				GridViewRounded.ColumnCount = cols;
+				for (j = 0; j < rows; j++) {
+					entries = new string[cols];
+					GridViewRounded.Rows.Add(entries);
+				}
+			}));
+			Extent = new Size(cols, rows);
+		}
+
+		public void SetText(int row, int col, string text, Color fore, Color back) {
+			if (row >= Extent.Height) return;
+			if (col >= Extent.Width) return;
+			GridView?.Invoke(new Action(delegate {
+				GridView.Rows[row].Cells[col].Value = text;
+				GridView.Rows[row].Cells[col].Style = new DataGridViewCellStyle { ForeColor = fore, BackColor = back };
+			}));
+			GridViewRounded?.Invoke(new Action(delegate {
+				GridViewRounded.Rows[row].Cells[col].Value = text;
+				GridViewRounded.Rows[row].Cells[col].Style = new DataGridViewCellStyle { ForeColor = fore, BackColor = back };
+			}));
+		}
+	}
+
+}
