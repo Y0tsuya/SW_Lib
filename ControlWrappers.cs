@@ -25,8 +25,8 @@ using System;
 // Folderwatch v1.7.9:	Change Queue<LogItem> to ConcurrentQueue<LogItem> for reentrancy problem
 // Cobra v1.1.1:		Change script grid launch from click to doubleclick
 //						ConsoleTextManager PopLog batch process performance improvement
+//						Move ScriptButtonManager and ScripGridManager from ScriptingHost
 // FolderBot v2.3.0		Update boolean naming convention
-
 
 namespace CustomControls {
 	public class ConsoleTextManager {
