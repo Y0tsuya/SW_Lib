@@ -15,6 +15,7 @@ using CustomExtensions;
 
 // UnifiedProxyControlBase is shared by both the parent application
 // and the ScriptingHost
+// v1.1.0	Move ScriptButtonManager and ScriptGridManager to ControlWrappers
 
 namespace Scripting {
 	public class UnifiedProxyControlBase {
